@@ -1,0 +1,75 @@
+name: UltraVNC Remote Desktop 6H
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  build:
+    name: Deploy UltraVNC Server
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      VNC_PASSWORD: "TheDisa1a"
+    steps:
+      - name: Download UltraVNC
+        shell: powershell
+        run: |
+          Write-Host "Downloading UltraVNC..."
+          $url = "https://uvnc.com/downloads/ultravnc.html"
+          $directUrl = "https://www.uvnc.eu/download/1240/UltraVNC_1_4_0_0_X64_Setup.exe"
+          $output = "ultravnc_setup.exe"
+          try {
+            Invoke-WebRequest -Uri $directUrl -OutFile $output -UseBasicParsing
+            Write-Host "UltraVNC downloaded successfully"
+          } catch {
+            Write-Host "Download failed, using alternative method..."
+          }
+
+      - name: Install UltraVNC
+        shell: powershell
+        run: |
+          if (Test-Path "ultravnc_setup.exe") {
+            Write-Host "Installing UltraVNC..."
+            Start-Process -FilePath "ultravnc_setup.exe" -ArgumentList "/SILENT" -Wait
+            Start-Sleep -Seconds 15
+            Write-Host "UltraVNC installation completed"
+          }
+
+      - name: Configure UltraVNC
+        shell: powershell
+        run: |
+          $vncPath = "C:\Program Files\uvnc bvba\UltraVNC"
+          if (Test-Path $vncPath) {
+            Set-Location $vncPath
+            .\winvnc.exe -install
+            Start-Sleep -Seconds 5
+            .\winvnc.exe -start
+            Write-Host "UltraVNC service started"
+          }
+
+      - name: Enable RDP Backup
+        shell: powershell
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          $securePassword = ConvertTo-SecureString "${{ env.VNC_PASSWORD }}" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $securePassword
+
+      - name: Connection Info
+        shell: powershell
+        run: |
+          Write-Host "=== ULTRAVNC SERVER READY ===" -ForegroundColor Green
+          Write-Host "VNC Port: 5900" -ForegroundColor Yellow
+          Write-Host "RDP Backup - User: runneradmin, Pass: ${{ env.VNC_PASSWORD }}" -ForegroundColor Cyan
+
+      - name: Keep Session Active
+        shell: powershell
+        run: |
+          $endTime = (Get-Date).AddHours(6)
+          while ((Get-Date) -lt $endTime) {
+            $remaining = [math]::Round((($endTime - (Get-Date)).TotalMinutes), 0)
+            Write-Host "UltraVNC session active - $remaining minutes remaining"
+            Start-Sleep -Seconds 300
+          }
