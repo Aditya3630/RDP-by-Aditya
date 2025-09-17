@@ -1,0 +1,93 @@
+name: RustDesk RDP Stable 6H
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'   # हर 6 घंटे में auto restart
+
+jobs:
+  build:
+    name: 🚀 Deploy RustDesk Client
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    env:
+      RUSTDESK_URL: "https://github.com/rustdesk/rustdesk/releases/download/1.4.1/rustdesk-1.4.1-x86_64.msi"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare folders
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path rd_files, logs | Out-Null
+
+      - name: Download RustDesk
+        shell: powershell
+        run: |
+          $url = "${{ env.RUSTDESK_URL }}"
+          if ($url -eq "") {
+            Write-Host "❗ RUSTDESK_URL not set!" -ForegroundColor Red
+            exit 1
+          }
+          $out = "rd_files\rustdesk_installer.msi"
+          Write-Host "⬇️ Downloading RustDesk MSI from $url …"
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          if (-not (Test-Path $out)) {
+            Write-Host "❌ Download failed!"
+            exit 1
+          } else {
+            Write-Host "✅ Downloaded RustDesk installer."
+          }
+
+      - name: Install RustDesk silently
+        shell: powershell
+        run: |
+          $msi = "rd_files\rustdesk_installer.msi"
+          if (Test-Path $msi) {
+            Write-Host "⚡ Installing RustDesk silently…"
+            Start-Process msiexec.exe -ArgumentList "/i", $msi, "/quiet", "/norestart" -Wait
+            Write-Host "✅ RustDesk installation done."
+          } else {
+            Write-Host "❌ Installer MSI not found!"
+            exit 1
+          }
+
+      - name: Enable Remote Desktop (optional)
+        shell: powershell
+        run: |
+          Write-Host "🔓 Enabling Windows Remote Desktop (optional)…"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          net user runneradmin TheDisa1a || Write-Host "User set step skipped or already exists"
+
+      - name: Start RustDesk
+        shell: powershell
+        run: |
+          $exe = Get-ChildItem -Path "C:\Program Files\RustDesk" -Recurse -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($exe) {
+            Write-Host "▶️ Starting RustDesk client: $($exe.FullName)"
+            Start-Process -FilePath $exe.FullName -WindowStyle Minimized
+            Start-Sleep -Seconds 5
+            Write-Host "✅ RustDesk started."
+          } else {
+            Write-Host "❌ Could not find RustDesk executable in default install folder."
+            exit 1
+          }
+
+      - name: Show Connection Info
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "╔════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║     🚀 RUSTDESK CLIENT RUNNING     ║" -ForegroundColor Cyan
+          Write-Host "╚════════════════════════════════════╝" -ForegroundColor Cyan
+          Write-Host "Use RustDesk to connect via public or self-hosted servers."
+          Write-Host ""
+
+      - name: Keep Session Alive (optional)
+        shell: powershell
+        run: |
+          Start-Job -ScriptBlock { while ($true) { Start-Sleep -Seconds 300 } } | Out-Null
+          Write-Host "🔄 Keepalive loop started."
