@@ -1,0 +1,170 @@
+name: Windows 10 RDP Server 6H
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Session duration in hours (max 6)'
+        required: false
+        default: '6'
+        type: string
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  build:
+    name: Deploy Windows 10 RDP Server
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      RDP_PASSWORD: "TheDisa1a"
+    steps:
+      - name: Enable Windows 10 RDP
+        shell: powershell
+        run: |
+          Write-Host "Setting up Windows 10 Remote Desktop..." -ForegroundColor Green
+          
+          # Enable Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          
+          # Enable Network Level Authentication
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 1 -Force
+          
+          # Configure firewall for RDP
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          New-NetFirewallRule -DisplayName "RDP-Custom" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -ErrorAction SilentlyContinue
+          
+          # Set user password
+          $securePassword = ConvertTo-SecureString "${{ env.RDP_PASSWORD }}" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $securePassword
+          
+          # Add user to Remote Desktop Users group
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
+          
+          Write-Host "Windows 10 RDP enabled successfully" -ForegroundColor Green
+
+      - name: Basic System Optimization
+        shell: powershell
+        run: |
+          Write-Host "Optimizing system for RDP..." -ForegroundColor Yellow
+          
+          # Set high performance power plan
+          try {
+            powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+            Write-Host "High performance power plan activated"
+          } catch {
+            Write-Host "Power plan setting skipped"
+          }
+          
+          # Disable Windows Defender real-time protection temporarily
+          try {
+            Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+            Write-Host "Windows Defender optimized"
+          } catch {
+            Write-Host "Windows Defender setting skipped"
+          }
+          
+          Write-Host "Basic optimizations applied" -ForegroundColor Green
+
+      - name: Get Connection Information
+        shell: powershell
+        run: |
+          Write-Host "Retrieving connection information..." -ForegroundColor Cyan
+          
+          try {
+            # Get public IP address
+            $publicIP = Invoke-RestMethod -Uri "https://api.ipify.org" -UseBasicParsing -TimeoutSec 30
+            $localIP = (Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias "Ethernet*" | Select-Object -First 1).IPAddress
+            
+            Write-Host ""
+            Write-Host "=================================" -ForegroundColor Green
+            Write-Host "  WINDOWS 10 RDP SERVER READY  " -ForegroundColor Green  
+            Write-Host "=================================" -ForegroundColor Green
+            Write-Host ""
+            Write-Host "CONNECTION DETAILS:" -ForegroundColor Yellow
+            Write-Host "Public IP: $publicIP" -ForegroundColor White
+            Write-Host "Local IP:  $localIP" -ForegroundColor White
+            Write-Host "Port:      3389 (RDP)" -ForegroundColor White
+            Write-Host "Username:  runneradmin" -ForegroundColor White
+            Write-Host "Password:  ${{ env.RDP_PASSWORD }}" -ForegroundColor White
+            Write-Host ""
+            Write-Host "HOW TO CONNECT:" -ForegroundColor Cyan
+            Write-Host "1. Open Remote Desktop Connection (mstsc)" -ForegroundColor White
+            Write-Host "2. Computer: $publicIP" -ForegroundColor White
+            Write-Host "3. Username: runneradmin" -ForegroundColor White
+            Write-Host "4. Password: ${{ env.RDP_PASSWORD }}" -ForegroundColor White
+            Write-Host ""
+            Write-Host "Session Duration: 6 hours maximum" -ForegroundColor Red
+            Write-Host "=================================" -ForegroundColor Green
+            
+          } catch {
+            Write-Host "IP retrieval failed, using local details:" -ForegroundColor Yellow
+            Write-Host "Username: runneradmin" -ForegroundColor White
+            Write-Host "Password: ${{ env.RDP_PASSWORD }}" -ForegroundColor White
+            Write-Host "Check GitHub Actions runner IP in logs" -ForegroundColor White
+          }
+
+      - name: System Information
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "SYSTEM INFORMATION:" -ForegroundColor Cyan
+          
+          try {
+            $os = Get-CimInstance -ClassName Win32_OperatingSystem
+            $cpu = Get-CimInstance -ClassName Win32_Processor
+            $memory = Get-CimInstance -ClassName Win32_ComputerSystem
+            $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='C:'"
+            
+            Write-Host "OS: $($os.Caption)" -ForegroundColor White
+            Write-Host "CPU: $($cpu.Name)" -ForegroundColor White
+            Write-Host "CPU Cores: $($cpu.NumberOfCores)" -ForegroundColor White
+            Write-Host "Memory: $([math]::Round($memory.TotalPhysicalMemory / 1GB, 2)) GB" -ForegroundColor White
+            Write-Host "Disk Space: $([math]::Round($disk.FreeSpace / 1GB, 2)) GB free" -ForegroundColor White
+            Write-Host ""
+          } catch {
+            Write-Host "System information retrieval skipped"
+          }
+
+      - name: Keep Session Active
+        shell: powershell
+        run: |
+          Write-Host "Starting RDP session keepalive..." -ForegroundColor Green
+          Write-Host "Server will remain active for 6 hours maximum" -ForegroundColor Yellow
+          Write-Host ""
+          
+          $startTime = Get-Date
+          $maxDuration = New-TimeSpan -Hours 6
+          $checkInterval = 300  # 5 minutes
+          
+          while ($true) {
+            $currentTime = Get-Date
+            $elapsed = $currentTime - $startTime
+            
+            if ($elapsed -gt $maxDuration) {
+              Write-Host "Maximum session time (6 hours) reached. Ending session..." -ForegroundColor Red
+              break
+            }
+            
+            $remaining = $maxDuration - $elapsed
+            $elapsedStr = "$($elapsed.Hours)h $($elapsed.Minutes)m"
+            $remainingStr = "$($remaining.Hours)h $($remaining.Minutes)m"
+            
+            Write-Host "RDP Active: $elapsedStr | Remaining: $remainingStr" -ForegroundColor Green
+            
+            # Ensure RDP service is running
+            try {
+              $rdpService = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
+              if ($rdpService.Status -ne "Running") {
+                Start-Service -Name "TermService" -ErrorAction SilentlyContinue
+                Write-Host "RDP service restarted" -ForegroundColor Yellow
+              }
+            } catch {
+              # Service check failed, continue anyway
+            }
+            
+            Start-Sleep -Seconds $checkInterval
+          }
+          
+          Write-Host "Session completed successfully" -ForegroundColor Green
