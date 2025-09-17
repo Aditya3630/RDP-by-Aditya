@@ -1,0 +1,183 @@
+name: Windows 10 RDP Server 6H
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Session duration in hours (max 6)'
+        required: false
+        default: '6'
+        type: string
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  build:
+    name: Deploy Windows 10 RDP Server
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      RDP_PASSWORD: "TheDisa1a"
+    steps:
+      - name: Enable Windows 10 RDP
+        shell: powershell
+        run: |
+          Write-Host "Setting up Windows 10 Remote Desktop..." -ForegroundColor Green
+          
+          # Enable Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          
+          # Enable Network Level Authentication (Windows 10 security)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 1 -Force
+          
+          # Configure firewall for RDP
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          New-NetFirewallRule -DisplayName "RDP-Custom" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -ErrorAction SilentlyContinue
+          
+          # Set user password
+          $securePassword = ConvertTo-SecureString "${{ env.RDP_PASSWORD }}" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $securePassword
+          
+          # Add user to Remote Desktop Users group
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
+          
+          Write-Host "Windows 10 RDP enabled successfully" -ForegroundColor Green
+
+      - name: Optimize Windows 10 for RDP
+        shell: powershell
+        run: |
+          Write-Host "Optimizing Windows 10 for remote access..." -ForegroundColor Yellow
+          
+          # Disable Windows Defender real-time protection for better performance
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+          
+          # Set high performance power plan
+          powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+          
+          # Disable Windows Update during session
+          Stop-Service -Name "wuauserv" -Force -ErrorAction SilentlyContinue
+          Set-Service -Name "wuauserv" -StartupType Disabled -ErrorAction SilentlyContinue
+          
+          # Configure visual effects for better RDP performance
+          $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+          if (-not (Test-Path $regPath)) {
+            New-Item -Path $regPath -Force
+          }
+          Set-ItemProperty -Path $regPath -Name "fDisableWallpaper" -Value 1 -Force
+          
+          Write-Host "Windows 10 optimizations applied" -ForegroundColor Green
+
+      - name: Get Public IP and Connection Info
+        shell: powershell
+        run: |
+          Write-Host "Retrieving connection information..." -ForegroundColor Cyan
+          
+          try {
+            # Get public IP address
+            $publicIP = Invoke-RestMethod -Uri "https://api.ipify.org" -UseBasicParsing -TimeoutSec 10
+            $localIP = (Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias "Ethernet*" | Select-Object -First 1).IPAddress
+            
+            Write-Host ""
+            Write-Host "=================================" -ForegroundColor Green
+            Write-Host "  WINDOWS 10 RDP SERVER READY  " -ForegroundColor Green  
+            Write-Host "=================================" -ForegroundColor Green
+            Write-Host ""
+            Write-Host "CONNECTION DETAILS:" -ForegroundColor Yellow
+            Write-Host "Public IP: $publicIP" -ForegroundColor White
+            Write-Host "Local IP:  $localIP" -ForegroundColor White
+            Write-Host "Port:      3389 (RDP)" -ForegroundColor White
+            Write-Host "Username:  runneradmin" -ForegroundColor White
+            Write-Host "Password:  ${{ env.RDP_PASSWORD }}" -ForegroundColor White
+            Write-Host ""
+            Write-Host "HOW TO CONNECT:" -ForegroundColor Cyan
+            Write-Host "1. Open 'Remote Desktop Connection' (mstsc)" -ForegroundColor White
+            Write-Host "2. Computer: $publicIP" -ForegroundColor White
+            Write-Host "3. Username: runneradmin" -ForegroundColor White
+            Write-Host "4. Password: ${{ env.RDP_PASSWORD }}" -ForegroundColor White
+            Write-Host ""
+            Write-Host "Session Duration: 6 hours maximum" -ForegroundColor Red
+            Write-Host "=================================" -ForegroundColor Green
+            
+          } catch {
+            Write-Host "Could not retrieve IP information: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "Use local connection details from GitHub Actions logs"
+          }
+
+      - name: Install Essential Software
+        shell: powershell
+        run: |
+          Write-Host "Installing essential software..." -ForegroundColor Yellow
+          
+          # Install Chocolatey package manager
+          try {
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+            Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+            Write-Host "Chocolatey installed successfully"
+          } catch {
+            Write-Host "Chocolatey installation skipped"
+          }
+          
+          # Install basic tools
+          try {
+            choco install googlechrome firefox notepadplusplus 7zip -y --limit-output --no-progress
+            Write-Host "Basic software installed"
+          } catch {
+            Write-Host "Software installation skipped"
+          }
+
+      - name: System Information
+        shell: powershell
+        run: |
+          Write-Host "SYSTEM INFORMATION:" -ForegroundColor Cyan
+          $os = Get-CimInstance -ClassName Win32_OperatingSystem
+          $cpu = Get-CimInstance -ClassName Win32_Processor
+          $memory = Get-CimInstance -ClassName Win32_ComputerSystem
+          $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='C:'"
+          
+          Write-Host "OS: $($os.Caption) $($os.Version)" -ForegroundColor White
+          Write-Host "CPU: $($cpu.Name)" -ForegroundColor White
+          Write-Host "CPU Cores: $($cpu.NumberOfCores)" -ForegroundColor White
+          Write-Host "Memory: $([math]::Round($memory.TotalPhysicalMemory / 1GB, 2)) GB" -ForegroundColor White
+          Write-Host "Disk Space: $([math]::Round($disk.Size / 1GB, 2)) GB total, $([math]::Round($disk.FreeSpace / 1GB, 2)) GB free" -ForegroundColor White
+
+      - name: Keep Session Active
+        shell: powershell
+        run: |
+          Write-Host "Starting session keepalive..." -ForegroundColor Green
+          Write-Host "RDP server will remain active for maximum 6 hours" -ForegroundColor Yellow
+          
+          $startTime = Get-Date
+          $maxDuration = New-TimeSpan -Hours 6
+          $checkInterval = 300  # 5 minutes
+          
+          while ($true) {
+            $currentTime = Get-Date
+            $elapsed = $currentTime - $startTime
+            
+            if ($elapsed -gt $maxDuration) {
+              Write-Host "Maximum session time (6 hours) reached. Shutting down..." -ForegroundColor Red
+              break
+            }
+            
+            $remaining = $maxDuration - $elapsed
+            $elapsedStr = "$($elapsed.Hours)h $($elapsed.Minutes)m"
+            $remainingStr = "$($remaining.Hours)h $($remaining.Minutes)m"
+            
+            Write-Host "Session Active: $elapsedStr | Remaining: $remainingStr" -ForegroundColor Green
+            
+            # Check if RDP service is running
+            $rdpService = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
+            if ($rdpService.Status -ne "Running") {
+              Write-Host "RDP service stopped, restarting..." -ForegroundColor Yellow
+              Start-Service -Name "TermService" -ErrorAction SilentlyContinue
+            }
+            
+            # Prevent system sleep
+            [System.Windows.Forms.Application]::SetSuspendState("Suspend", $false, $false) | Out-Null
+            
+            Start-Sleep -Seconds $checkInterval
+          }
+          
+          Write-Host "Session completed successfully" -ForegroundColor Green
