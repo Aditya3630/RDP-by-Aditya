@@ -1,0 +1,66 @@
+name: AnyDesk Remote Desktop
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  anydesk:
+    name: AnyDesk with Auto Credentials
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: Setup AnyDesk
+        shell: powershell
+        run: |
+          Write-Host "Setting up AnyDesk..." -ForegroundColor Green
+          
+          # Download AnyDesk
+          Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile "AnyDesk.exe"
+          
+          # Start AnyDesk service
+          Start-Process -FilePath "AnyDesk.exe" -ArgumentList "--install-service" -Wait -ErrorAction SilentlyContinue
+          Start-Process -FilePath "AnyDesk.exe" -ArgumentList "--start-service" -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 15
+
+      - name: Get AnyDesk ID and Set Password
+        shell: powershell
+        run: |
+          Write-Host "Retrieving AnyDesk credentials..." -ForegroundColor Yellow
+          
+          # Set AnyDesk password
+          & .\AnyDesk.exe --set-password "AnyDesk123" 2>$null
+          Start-Sleep -Seconds 5
+          
+          # Get AnyDesk ID
+          try {
+            $anyDeskId = & .\AnyDesk.exe --get-id 2>$null
+            if ($anyDeskId) {
+              Write-Host ""
+              Write-Host "=================================" -ForegroundColor Green
+              Write-Host "    ANYDESK CONNECTION READY    " -ForegroundColor Green
+              Write-Host "=================================" -ForegroundColor Green
+              Write-Host ""
+              Write-Host "AnyDesk ID: $anyDeskId" -ForegroundColor Yellow
+              Write-Host "Password: AnyDesk123" -ForegroundColor Yellow
+              Write-Host ""
+              Write-Host "Download AnyDesk client:" -ForegroundColor Cyan
+              Write-Host "https://anydesk.com/en/downloads" -ForegroundColor Cyan
+              Write-Host "=================================" -ForegroundColor Green
+            } else {
+              Write-Host "AnyDesk ID not retrieved automatically"
+            }
+          } catch {
+            Write-Host "Error getting AnyDesk ID"
+          }
+
+      - name: Keep Session Active
+        shell: powershell
+        run: |
+          $endTime = (Get-Date).AddHours(6)
+          while ((Get-Date) -lt $endTime) {
+            $remaining = [math]::Round((($endTime - (Get-Date)).TotalMinutes), 0)
+            Write-Host "AnyDesk Active | ID available | $remaining min remaining" -ForegroundColor Green
+            Start-Sleep -Seconds 300
+          }
