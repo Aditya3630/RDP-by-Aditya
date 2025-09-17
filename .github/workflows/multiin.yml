@@ -1,0 +1,293 @@
+name: All-in-One Remote Desktop Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      remote_type:
+        description: 'Choose Remote Desktop Type'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - anydesk
+        - rustdesk
+        - rdp
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  multi-rdp:
+    name: Multi Remote Desktop Server
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      MASTER_PASSWORD: "MultiRDP123"
+    steps:
+      - name: System Preparation
+        shell: powershell
+        run: |
+          Write-Host "=== PREPARING MULTI-REMOTE SYSTEM ===" -ForegroundColor Cyan
+          
+          # Enable RDP First (Always Available)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          $securePassword = ConvertTo-SecureString "${{ env.MASTER_PASSWORD }}" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $securePassword
+          
+          # Get System IP
+          try {
+            $publicIP = Invoke-RestMethod -Uri "https://api.ipify.org" -UseBasicParsing -TimeoutSec 10
+            Write-Host "System IP: $publicIP" -ForegroundColor Green
+            echo "SYSTEM_IP=$publicIP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } catch {
+            Write-Host "IP detection failed"
+            echo "SYSTEM_IP=Check-GitHub-Logs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          
+          Write-Host "Basic RDP enabled as backup" -ForegroundColor Green
+
+      - name: Setup AnyDesk
+        shell: powershell
+        run: |
+          Write-Host "=== SETTING UP ANYDESK ===" -ForegroundColor Yellow
+          
+          try {
+            # Download AnyDesk
+            Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile "AnyDesk.exe" -TimeoutSec 30
+            
+            # Start AnyDesk Service
+            Start-Process -FilePath "AnyDesk.exe" -ArgumentList "--install-service" -Wait -ErrorAction Stop
+            Start-Process -FilePath "AnyDesk.exe" -ArgumentList "--start-service" -ErrorAction Stop
+            Start-Sleep -Seconds 10
+            
+            # Configure AnyDesk
+            & .\AnyDesk.exe --set-password "${{ env.MASTER_PASSWORD }}" 2>$null
+            Start-Sleep -Seconds 5
+            
+            # Get AnyDesk ID
+            $anydeskId = & .\AnyDesk.exe --get-id 2>$null
+            if ($anydeskId) {
+              $anydeskId = $anydeskId.Trim()
+              Write-Host "AnyDesk ID: $anydeskId" -ForegroundColor Green
+              Write-Host "AnyDesk Password: ${{ env.MASTER_PASSWORD }}" -ForegroundColor Green
+              echo "ANYDESK_ID=$anydeskId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              echo "ANYDESK_STATUS=SUCCESS" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            } else {
+              throw "AnyDesk ID not retrieved"
+            }
+          } catch {
+            Write-Host "AnyDesk setup failed: $($_.Exception.Message)" -ForegroundColor Red
+            echo "ANYDESK_STATUS=FAILED" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
+      - name: Setup RustDesk
+        shell: powershell
+        run: |
+          Write-Host "=== SETTING UP RUSTDESK ===" -ForegroundColor Yellow
+          
+          try {
+            # Download RustDesk
+            $rustdeskUrl = "https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-1.2.3-x86_64.exe"
+            Invoke-WebRequest -Uri $rustdeskUrl -OutFile "rustdesk.exe" -TimeoutSec 30
+            
+            # Start RustDesk
+            Start-Process -FilePath "rustdesk.exe" -ArgumentList "--service" -WindowStyle Hidden
+            Start-Sleep -Seconds 15
+            
+            # Configure RustDesk
+            & .\rustdesk.exe --password "${{ env.MASTER_PASSWORD }}" 2>$null
+            Start-Sleep -Seconds 5
+            
+            # Get RustDesk ID
+            $rustdeskId = & .\rustdesk.exe --get-id 2>$null
+            if ($rustdeskId) {
+              $rustdeskId = $rustdeskId.Trim()
+              Write-Host "RustDesk ID: $rustdeskId" -ForegroundColor Green
+              Write-Host "RustDesk Password: ${{ env.MASTER_PASSWORD }}" -ForegroundColor Green
+              echo "RUSTDESK_ID=$rustdeskId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              echo "RUSTDESK_STATUS=SUCCESS" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            } else {
+              throw "RustDesk ID not retrieved"
+            }
+          } catch {
+            Write-Host "RustDesk setup failed: $($_.Exception.Message)" -ForegroundColor Red
+            echo "RUSTDESK_STATUS=FAILED" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
+      - name: Setup ngrok Tunnel (Public Access)
+        shell: powershell
+        run: |
+          Write-Host "=== SETTING UP NGROK TUNNEL ===" -ForegroundColor Yellow
+          
+          try {
+            # Download ngrok
+            Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip" -TimeoutSec 30
+            Expand-Archive ngrok.zip -DestinationPath . -Force
+            
+            # Start ngrok tunnel for RDP
+            Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
+            Start-Sleep -Seconds 15
+            
+            # Get ngrok public URL
+            $tunnelInfo = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -TimeoutSec 10
+            $publicUrl = $tunnelInfo.tunnels[0].public_url -replace "tcp://", ""
+            
+            if ($publicUrl) {
+              Write-Host "ngrok Public Address: $publicUrl" -ForegroundColor Green
+              echo "NGROK_URL=$publicUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              echo "NGROK_STATUS=SUCCESS" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            } else {
+              throw "ngrok URL not retrieved"
+            }
+          } catch {
+            Write-Host "ngrok setup failed: $($_.Exception.Message)" -ForegroundColor Red
+            echo "NGROK_STATUS=FAILED" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
+      - name: Install Essential Software
+        shell: powershell
+        run: |
+          Write-Host "=== INSTALLING ESSENTIAL SOFTWARE ===" -ForegroundColor Yellow
+          
+          try {
+            # Download and install Chrome
+            Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/375.126/chrome_installer.exe" -OutFile "chrome.exe" -TimeoutSec 30
+            Start-Process -FilePath "chrome.exe" -ArgumentList "/silent /install" -Wait -ErrorAction SilentlyContinue
+            
+            # Download Firefox
+            Invoke-WebRequest -Uri "https://download.mozilla.org/?product=firefox-stub&os=win&lang=en-US" -OutFile "firefox.exe" -TimeoutSec 30
+            Start-Process -FilePath "firefox.exe" -ArgumentList "/S" -Wait -ErrorAction SilentlyContinue
+            
+            Write-Host "Software installation completed" -ForegroundColor Green
+          } catch {
+            Write-Host "Some software installations may have failed, but system is ready" -ForegroundColor Yellow
+          }
+
+      - name: Display All Connection Information
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "████████████████████████████████████████████████████████" -ForegroundColor Green
+          Write-Host "██                                                    ██" -ForegroundColor Green
+          Write-Host "██           ALL-IN-ONE REMOTE DESKTOP READY          ██" -ForegroundColor Green
+          Write-Host "██                                                    ██" -ForegroundColor Green
+          Write-Host "████████████████████████████████████████████████████████" -ForegroundColor Green
+          Write-Host ""
+          
+          # System Information
+          Write-Host "🖥️  SYSTEM DETAILS:" -ForegroundColor Cyan
+          Write-Host "    System IP: $env:SYSTEM_IP" -ForegroundColor White
+          Write-Host "    Master Password: ${{ env.MASTER_PASSWORD }}" -ForegroundColor White
+          Write-Host "    Username: runneradmin" -ForegroundColor White
+          Write-Host ""
+          
+          # AnyDesk Information
+          Write-Host "🔵 ANYDESK CONNECTION:" -ForegroundColor Blue
+          if ($env:ANYDESK_STATUS -eq "SUCCESS") {
+            Write-Host "    ✅ Status: ACTIVE" -ForegroundColor Green
+            Write-Host "    🆔 ID: $env:ANYDESK_ID" -ForegroundColor Yellow
+            Write-Host "    🔑 Password: ${{ env.MASTER_PASSWORD }}" -ForegroundColor Yellow
+            Write-Host "    📱 Download: https://anydesk.com/download" -ForegroundColor Cyan
+          } else {
+            Write-Host "    ❌ Status: FAILED" -ForegroundColor Red
+          }
+          Write-Host ""
+          
+          # RustDesk Information  
+          Write-Host "🟠 RUSTDESK CONNECTION:" -ForegroundColor DarkYellow
+          if ($env:RUSTDESK_STATUS -eq "SUCCESS") {
+            Write-Host "    ✅ Status: ACTIVE" -ForegroundColor Green
+            Write-Host "    🆔 ID: $env:RUSTDESK_ID" -ForegroundColor Yellow
+            Write-Host "    🔑 Password: ${{ env.MASTER_PASSWORD }}" -ForegroundColor Yellow
+            Write-Host "    📱 Download: https://rustdesk.com/download" -ForegroundColor Cyan
+          } else {
+            Write-Host "    ❌ Status: FAILED" -ForegroundColor Red
+          }
+          Write-Host ""
+          
+          # Windows RDP Information
+          Write-Host "🟢 WINDOWS RDP (ALWAYS AVAILABLE):" -ForegroundColor Green
+          Write-Host "    ✅ Status: ACTIVE" -ForegroundColor Green
+          Write-Host "    🌐 Direct: $env:SYSTEM_IP:3389" -ForegroundColor Yellow
+          Write-Host "    👤 Username: runneradmin" -ForegroundColor Yellow
+          Write-Host "    🔑 Password: ${{ env.MASTER_PASSWORD }}" -ForegroundColor Yellow
+          if ($env:NGROK_STATUS -eq "SUCCESS") {
+            Write-Host "    🌍 Public: $env:NGROK_URL" -ForegroundColor Yellow
+          }
+          Write-Host "    📱 Use: Remote Desktop Connection (mstsc)" -ForegroundColor Cyan
+          Write-Host ""
+          
+          # Instructions
+          Write-Host "📋 CONNECTION INSTRUCTIONS:" -ForegroundColor Magenta
+          Write-Host "    1. Choose any method above that shows ACTIVE status" -ForegroundColor White
+          Write-Host "    2. Download the respective client software" -ForegroundColor White
+          Write-Host "    3. Use the provided ID/IP and password" -ForegroundColor White
+          Write-Host "    4. Connect and enjoy full Windows desktop!" -ForegroundColor White
+          Write-Host ""
+          
+          # Session Info
+          Write-Host "⏰ SESSION INFORMATION:" -ForegroundColor Red
+          Write-Host "    Duration: 6 hours maximum" -ForegroundColor White
+          Write-Host "    Auto-restart: Every 6 hours (if scheduled)" -ForegroundColor White
+          Write-Host "    Multiple connection methods available" -ForegroundColor White
+          Write-Host ""
+          Write-Host "████████████████████████████████████████████████████████" -ForegroundColor Green
+
+      - name: Keep All Services Active
+        shell: powershell
+        run: |
+          Write-Host "🔄 Starting keepalive for all remote desktop services..." -ForegroundColor Green
+          Write-Host "All connection details are displayed above ⬆️" -ForegroundColor Yellow
+          Write-Host ""
+          
+          $startTime = Get-Date
+          $maxDuration = New-TimeSpan -Hours 6
+          $checkInterval = 300  # 5 minutes
+          
+          while ($true) {
+            $currentTime = Get-Date
+            $elapsed = $currentTime - $startTime
+            
+            if ($elapsed -gt $maxDuration) {
+              Write-Host "⏰ Maximum session time (6 hours) reached. Ending session..." -ForegroundColor Red
+              break
+            }
+            
+            $remaining = $maxDuration - $elapsed
+            $elapsedStr = "$($elapsed.Hours)h $($elapsed.Minutes)m"
+            $remainingStr = "$($remaining.Hours)h $($remaining.Minutes)m"
+            
+            # Status update
+            Write-Host "🟢 All Services Active | Elapsed: $elapsedStr | Remaining: $remainingStr" -ForegroundColor Green
+            
+            # Check and restart services if needed
+            try {
+              # Check RDP service
+              $rdpService = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
+              if ($rdpService.Status -ne "Running") {
+                Start-Service -Name "TermService" -ErrorAction SilentlyContinue
+                Write-Host "🔧 RDP service restarted" -ForegroundColor Yellow
+              }
+              
+              # Check if AnyDesk is running
+              $anydeskProcess = Get-Process -Name "AnyDesk" -ErrorAction SilentlyContinue
+              if (-not $anydeskProcess -and (Test-Path "AnyDesk.exe")) {
+                Start-Process -FilePath "AnyDesk.exe" -WindowStyle Hidden -ErrorAction SilentlyContinue
+                Write-Host "🔧 AnyDesk process restarted" -ForegroundColor Yellow
+              }
+              
+              # Check if RustDesk is running
+              $rustdeskProcess = Get-Process -Name "rustdesk" -ErrorAction SilentlyContinue
+              if (-not $rustdeskProcess -and (Test-Path "rustdesk.exe")) {
+                Start-Process -FilePath "rustdesk.exe" -ArgumentList "--service" -WindowStyle Hidden -ErrorAction SilentlyContinue
+                Write-Host "🔧 RustDesk process restarted" -ForegroundColor Yellow
+              }
+            } catch {
+              # Continue even if service checks fail
+            }
+            
+            Start-Sleep -Seconds $checkInterval
+          }
+          
+          Write-Host "✅ Session completed successfully" -ForegroundColor Green
