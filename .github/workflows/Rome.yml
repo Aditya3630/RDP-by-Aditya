@@ -1,0 +1,250 @@
+name: RustDesk RDP Stable 6H
+
+on:
+
+workflow_dispatch:
+
+inputs:
+
+duration:
+
+description: 'Session duration in hours (max 6)'
+
+required: false
+
+default: '6'
+
+type: string
+
+schedule:
+
+- cron: '0 */6 * * *' # हर 6 घंटे में auto restart
+
+jobs:
+
+build:
+
+name: Deploy RustDesk Portable
+
+runs-on: windows-latest
+
+timeout-minutes: 360 # 6 hours max limit for GitHub Actions
+
+env:
+
+RUSTDESK_URL: "https://github.com/rustdesk/rustdesk/releases/download/1.2.3/rustdesk-1.2.3-x86_64-pc-windows-msvc-portable.zip"
+
+RDP_PASSWORD: "TheDisa1a"
+
+steps:
+
+- name: Checkout
+
+  uses: actions/checkout@v4
+
+- name: Prepare folders
+
+  shell: powershell
+
+  run: |
+    Write-Host "📁 Creating required directories..."
+    New-Item -ItemType Directory -Force -Path rd_files, logs | Out-Null
+    Write-Host "✅ Directories created successfully"
+
+- name: Download RustDesk Portable
+
+  shell: powershell
+
+  run: |
+    try {
+      $url = "${{ env.RUSTDESK_URL }}"
+      $out = "rd_files\rustdesk.zip"
+      Write-Host "⬇️ Downloading RustDesk from $url"
+      # Use TLS 1.2 for secure download
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+      if (-not (Test-Path $out) -or (Get-Item $out).Length -eq 0) {
+        Write-Host "❌ Download failed or file is empty!"
+        exit 1
+      }
+      Write-Host "✅ RustDesk downloaded successfully ($((Get-Item $out).Length / 1MB) MB)"
+    }
+    catch {
+      Write-Host "❌ Download error: $($_.Exception.Message)"
+      exit 1
+    }
+
+- name: Extract RustDesk
+
+  shell: powershell
+
+  run: |
+    try {
+      Write-Host "📦 Extracting RustDesk portable files..."
+      Expand-Archive -Path "rd_files\rustdesk.zip" -DestinationPath rd_files -Force
+      # Verify extraction
+      $exeFile = Get-ChildItem -Path rd_files -Recurse -Filter "rustdesk.exe" | Select-Object -First 1
+      if (-not $exeFile) {
+        Write-Host "❌ RustDesk executable not found after extraction!"
+        exit 1
+      }
+      Write-Host "✅ RustDesk extracted successfully: $($exeFile.FullName)"
+    }
+    catch {
+      Write-Host "❌ Extraction error: $($_.Exception.Message)"
+      exit 1
+    }
+
+- name: Enable Remote Desktop
+
+  shell: powershell
+
+  run: |
+    try {
+      Write-Host "🔓 Enabling Windows Remote Desktop..."
+      # Enable Remote Desktop
+      Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+      # Enable firewall rules for RDP
+      Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+      # Set user authentication level
+      Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
+      # Set password for runneradmin user
+      $securePassword = ConvertTo-SecureString "${{ env.RDP_PASSWORD }}" -AsPlainText -Force
+      Set-LocalUser -Name "runneradmin" -Password $securePassword
+      Write-Host "✅ Remote Desktop enabled successfully"
+    }
+    catch {
+      Write-Host "⚠️ RDP setup warning: $($_.Exception.Message)"
+      # Continue anyway as RustDesk is primary method
+    }
+
+- name: Start RustDesk Portable
+
+  shell: powershell
+
+  run: |
+    try {
+      $exe = Get-ChildItem -Path rd_files -Recurse -Filter "rustdesk.exe" | Select-Object -First 1
+      if (-not $exe) {
+        Write-Host "❌ Could not find RustDesk executable!"
+        exit 1
+      }
+      Write-Host "▶️ Starting RustDesk: $($exe.FullName)"
+      # Start RustDesk in background
+      $process = Start-Process -FilePath $exe.FullName -WindowStyle Minimized -PassThru
+      Start-Sleep -Seconds 10
+      # Verify process is running
+      if (Get-Process -Id $process.Id -ErrorAction SilentlyContinue) {
+        Write-Host "✅ RustDesk started successfully (PID: $($process.Id))"
+      } else {
+        Write-Host "⚠️ RustDesk process may have exited"
+      }
+      # Give RustDesk time to initialize
+      Start-Sleep -Seconds 15
+    }
+    catch {
+      Write-Host "❌ RustDesk startup error: $($_.Exception.Message)"
+      exit 1
+    }
+
+- name: Get RustDesk Connection Info
+
+  shell: powershell
+
+  run: |
+    try {
+      Write-Host "🔍 Retrieving RustDesk connection information..."
+      $exe = Get-ChildItem -Path rd_files -Recurse -Filter "rustdesk.exe" | Select-Object -First 1
+      if ($exe) {
+        # Try to get RustDesk ID
+        $rustdeskId = & $exe.FullName --get-id 2>$null
+        if ($rustdeskId -and $rustdeskId.Trim() -ne "") {
+          $rustdeskId = $rustdeskId.Trim()
+          Write-Host "🆔 RustDesk ID: $rustdeskId"
+        } else {
+          Write-Host "⚠️ Could not retrieve RustDesk ID automatically"
+        }
+        # Set a permanent password
+        try {
+          & $exe.FullName --password "${{ env.RDP_PASSWORD }}" 2>$null
+          Write-Host "🔐 RustDesk password set"
+        }
+        catch {
+          Write-Host "⚠️ Could not set RustDesk password"
+        }
+      }
+    }
+    catch {
+      Write-Host "⚠️ Connection info error: $($_.Exception.Message)"
+    }
+
+- name: Show Connection Info
+
+  shell: powershell
+
+  run: |
+    Write-Host ""
+    Write-Host "╔════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║ 🚀 RUSTDESK CLIENT RUNNING ║"       -ForegroundColor Cyan
+    Write-Host "╚════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "🔐 RDP Credentials:"              -ForegroundColor Yellow
+    Write-Host " Username: runneradmin"
+    Write-Host " Password: ${{ env.RDP_PASSWORD }}"
+    Write-Host ""
+    Write-Host "🖥️ RustDesk Connection:"          -ForegroundColor Green
+    Write-Host " Check the workflow logs above for RustDesk ID"
+    Write-Host " Password: ${{ env.RDP_PASSWORD }}"
+    Write-Host ""
+    Write-Host "📋 Instructions:"                -ForegroundColor Magenta
+    Write-Host " 1. Download RustDesk client from rustdesk.com"
+    Write-Host " 2. Enter the RustDesk ID from logs above"
+    Write-Host " 3. Use password: ${{ env.RDP_PASSWORD }}"
+    Write-Host ""
+    Write-Host "⏰ Session will run for maximum 6 hours" -ForegroundColor Red
+    Write-Host ""
+
+- name: System Information
+
+  shell: powershell
+
+  run: |
+    Write-Host "💻 System Information:"          -ForegroundColor Yellow
+    Write-Host "OS: $(Get-WmiObject -Class Win32_OperatingSystem | Select-Object -ExpandProperty Caption)"
+    Write-Host "Architecture: $env:PROCESSOR_ARCHITECTURE"
+    Write-Host "CPU Cores: $env:NUMBER_OF_PROCESSORS"
+    Write-Host "Memory: $([math]::Round((Get-WmiObject -Class Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)) GB"
+    Write-Host "Disk Space: $([math]::Round((Get-WmiObject -Class Win32_LogicalDisk -Filter \"DeviceID='C:'\").Size / 1GB, 2)) GB"
+    Write-Host ""
+
+- name: Keep Session Alive
+
+  shell: powershell
+
+  run: |
+    Write-Host "🔄 Keepalive loop started..."
+    Write-Host "Session will automatically end after 6 hours (GitHub Actions limit)"
+    $startTime  = Get-Date
+    $maxDuration = New-TimeSpan -Hours 6
+    while ($true) {
+      $currentTime = Get-Date
+      $elapsed     = $currentTime - $startTime
+      if ($elapsed -gt $maxDuration) {
+        Write-Host "⏰ Maximum session time reached (6 hours). Ending session..."
+        break
+      }
+      $remaining = $maxDuration - $elapsed
+      Write-Host "🕐 Session active for $($elapsed.Hours)h $($elapsed.Minutes)m. Remaining: $($remaining.Hours)h $($remaining.Minutes)m"
+      # Check if RustDesk is still running
+      $rustdeskProcess = Get-Process -Name "rustdesk" -ErrorAction SilentlyContinue
+      if (-not $rustdeskProcess) {
+        Write-Host "⚠️ RustDesk process not found. Attempting to restart..."
+        $exe = Get-ChildItem -Path rd_files -Recurse -Filter "rustdesk.exe" | Select-Object -First 1
+        if ($exe) {
+          Start-Process -FilePath $exe.FullName -WindowStyle Minimized
+          Start-Sleep -Seconds 10
+        }
+      }
+      Start-Sleep -Seconds 300  # Wait 5 minutes
+    }
+    Write-Host "✅ Session completed successfully"
